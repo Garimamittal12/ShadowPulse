@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    @apply font-sans;
+    margin: 0;
+  }
+  * {
+    @apply border-soc-border;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-soc-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-600;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-soc-card border border-soc-border rounded-xl shadow-card;
+  }
+  .card-panel {
+    @apply bg-soc-panel border border-soc-border rounded-xl;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-blue-600 hover:bg-blue-500 text-white shadow-sm;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 hover:bg-red-500 text-white shadow-sm;
+  }
+  .btn-ghost {
+    @apply btn text-ink-300 hover:bg-soc-hover hover:text-white;
+  }
+  .btn-outline {
+    @apply btn border border-soc-border text-ink-200 hover:bg-soc-hover hover:text-white;
+  }
+  .input {
+    @apply w-full bg-soc-bg border border-soc-border rounded-lg px-3 py-2 text-sm text-white placeholder-ink-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;
+  }
+  .skeleton {
+    @apply bg-soc-border/60 rounded animate-pulse-soft;
+  }
+  .live-dot {
+    @apply relative inline-flex h-2.5 w-2.5;
+  }
+  .live-dot::before {
+    content: '';
+    @apply absolute inline-flex h-full w-full rounded-full bg-current opacity-75 animate-pulse-ring;
+  }
+  .live-dot::after {
+    content: '';
+    @apply relative inline-flex rounded-full h-2.5 w-2.5 bg-current;
+  }
+}
+
+/* Light mode overrides */
+.light body {
+  @apply bg-ink-100 text-ink-900;
+}
+.light * {
+  border-color: #E2E8F0;
+}
+.light .card {
+  @apply bg-white border-ink-200 shadow-sm;
+}
+.light .card-panel {
+  @apply bg-ink-50 border-ink-200;
+}
+.light .bg-soc-bg { background-color: #F1F5F9 !important; }
+.light .bg-soc-panel { background-color: #F8FAFC !important; }
+.light .bg-soc-card { background-color: #FFFFFF !important; }
+.light .bg-soc-hover:hover { background-color: #F1F5F9 !important; }
+.light .hover\:bg-soc-hover:hover { background-color: #F1F5F9 !important; }
+.light .border-soc-border { border-color: #E2E8F0 !important; }
+.light .divide-soc-border > * { border-color: #E2E8F0 !important; }
+.light .text-white { color: #0F172A !important; }
+.light .text-ink-100 { color: #0F172A !important; }
+.light .text-ink-200 { color: #1E293B !important; }
+.light .text-ink-300 { color: #475569 !important; }
+.light .text-ink-400 { color: #64748B !important; }
+.light .text-ink-500 { color: #94A3B8 !important; }
+.light .text-ink-600 { color: #94A3B8 !important; }
+.light .bg-ink-700 { background-color: #CBD5E1 !important; }
+.light .bg-ink-600 { background-color: #CBD5E1 !important; }
+.light .input {
+  @apply bg-white border-ink-300 text-ink-900 placeholder-ink-400;
+}
+.light .btn-ghost { color: #475569; }
+.light .btn-ghost:hover { background-color: #F1F5F9; color: #0F172A; }
+.light .btn-outline { @apply border-ink-300 text-ink-700 hover:bg-ink-100 hover:text-ink-900; }
+.light .btn-primary { background-color: #2563EB; }
+.light .btn-primary:hover { background-color: #3B82F6; }
+.light .btn-primary { color: #FFFFFF !important; }
+.light .skeleton { @apply bg-ink-200; }
+.light ::-webkit-scrollbar-thumb { @apply bg-ink-300; }
+.light ::-webkit-scrollbar-thumb:hover { @apply bg-ink-400; }
+.light .from-blue-500 { --tw-gradient-from: #3B82F6 !important; }
+.light .to-blue-700 { --tw-gradient-to: #1D4ED8 !important; }
+.light .shadow-glow { box-shadow: 0 0 0 1px rgba(59,130,246,0.3), 0 0 12px rgba(59,130,246,0.15) !important; }

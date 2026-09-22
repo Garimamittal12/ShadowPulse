@@ -1,0 +1,611 @@
+"""
+MonitoringManager
+=================
+The central orchestrator of the ShadowPulse real-time monitoring engine.
+
+It owns:
+    - PacketDispatcher (the single sniffer)
+    - All detector instances + their daemon threads
+    - AlertManager (dedupe/persist/notify)
+    - NetworkMonitor (live device discovery)
+    - Scheduler (periodic jobs)
+    - StatisticsEngine (DB-driven statistics)
+    - Runtime monitoring state (started_at, uptime, packet counters)
+
+Lifecycle:
+    start()    -> begin packet capture + detectors + scheduler
+    stop()     -> cleanly stop everything and flush pending state
+    restart()  -> stop() then start()
+
+Detector contract (implemented in Phase 2 via base_detector.py):
+    detector.start() / detector.stop() / detector.status() / detector.health()
+    detector.statistics() / detector.handle_packet(packet)
+
+Any detector crash is isolated: the dispatcher catches exceptions per packet,
+and the manager monitors thread health so a crashed detector can be restarted.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+import psutil
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from utils.logger import get_logger
+from utils.config import get_config
+from utils.database import get_db_manager
+from utils.network_scanner import NetworkScanner
+
+from .packet_dispatcher import PacketDispatcher
+from .alert_manager import AlertManager
+from .network_monitor import NetworkMonitor
+from .scheduler import Scheduler
+from .statistics import StatisticsEngine
+
+# Detectors (all dispatcher-compatible)
+from detectors.arp_spoof import ARPSpoofDetector
+from detectors.dns_spoof import DNSSpoofDetector
+from detectors.dhcp_spoofing import DHCPSpoofingDetector
+from detectors.http_injection import HTTPInjectionDetector
+from detectors.icmp_redirect import ICMPRedirectDetector
+from detectors.rogue_access import RogueAccessDetector
+from detectors.ssl_strip import SSLStripDetector
+
+logger = get_logger()
+
+
+class MonitoringManager:
+    """Owns and coordinates the entire real-time detection pipeline."""
+
+    def __init__(self, emit_callback=None):
+        config = get_config()
+        network_cfg = config.get_network_config()
+        alert_cfg = config.get("ALERTS", "alert_cooldown", 60)
+
+        configured_iface = network_cfg.get("interface") or "auto"
+        iface_info = NetworkScanner.resolve_capture_interface(configured_iface)
+
+        self.interface = iface_info.get("scapy_iface") or configured_iface
+        self.interface_psutil = iface_info.get("psutil_name")
+        self.local_ip = iface_info.get("local_ip")
+        network_range_cfg = network_cfg.get("network_range")
+        if network_range_cfg in (None, "", "auto"):
+            self.network_range = iface_info.get("network_range") or "192.168.1.0/24"
+        else:
+            self.network_range = network_range_cfg
+            # Override stale template CIDR when the host is on a different subnet.
+            local_ip = iface_info.get("local_ip")
+            if local_ip and network_range_cfg == "192.168.1.0/24":
+                try:
+                    from ipaddress import ip_address, ip_network
+                    if ip_address(local_ip) not in ip_network(network_range_cfg, strict=False):
+                        self.network_range = iface_info.get("network_range") or network_range_cfg
+                        logger.info(
+                            f"MonitoringManager: overriding stale network_range "
+                            f"'{network_range_cfg}' -> '{self.network_range}'"
+                        )
+                except Exception:
+                    pass
+        self.scan_interval = int(network_cfg.get("scan_interval") or 300)
+
+        logger.info(
+            "MonitoringManager: network resolved — "
+            f"configured={iface_info.get('configured')}, "
+            f"scapy_iface={self.interface}, "
+            f"psutil={self.interface_psutil}, "
+            f"local_ip={self.local_ip}, "
+            f"network_range={self.network_range}"
+        )
+
+        self._db = get_db_manager()
+
+# WebSocket emitter callback (set by app.py).
+        self._emit_callback = emit_callback
+
+        # Core components
+        self.alert_manager = AlertManager(
+            cooldown_seconds=int(alert_cfg),
+            emit_callback=emit_callback,
+        )
+        self.network_monitor = NetworkMonitor(
+            network_range=self.network_range,
+            scan_interval=self.scan_interval,
+            device_callback=self._device_discovered_callback,
+        )
+        self.dispatcher = PacketDispatcher(
+            interface=self.interface,
+            filter_str=self._build_filter(),
+        )
+        self.statistics = StatisticsEngine()
+        self.scheduler = Scheduler()
+
+        # Detector registry: name -> detector instance
+        self._detectors: Dict[str, Any] = {}
+        self._detector_threads: Dict[str, threading.Thread] = {}
+        self._thread_health: Dict[str, dict] = {}
+
+        # Monitoring state
+        self._state_lock = threading.RLock()
+        self._monitoring = False
+        self._started_at: Optional[datetime] = None
+        self._stopped_at: Optional[datetime] = None
+        self._restart_count = 0
+
+        # Instantiate and register all detectors up-front.
+        self._register_all_detectors()
+
+    # ------------------------------------------------------------------
+    # Detector factory
+    # ------------------------------------------------------------------
+    def _register_all_detectors(self) -> None:
+        """Instantiate every detector and register it with the dispatcher.
+
+        Exactly one sniffer (PacketDispatcher) is shared by all detectors.
+        Respects the DETECTORS config section so operators can disable
+        specific detectors without code changes.
+        """
+        iface = self.interface
+        config = get_config()
+
+        # Build the full detector map.
+        all_detectors = {
+            "arp_spoof": ARPSpoofDetector(interface=iface),
+            "dns_spoof": DNSSpoofDetector(interface=iface),
+            "dhcp_spoofing": DHCPSpoofingDetector(interface=iface),
+            "http_injection": HTTPInjectionDetector(interface=iface),
+            "icmp_redirect": ICMPRedirectDetector(interface=iface),
+            "rogue_access": RogueAccessDetector(interface=iface),
+            "ssl_strip": SSLStripDetector(interface=iface),
+        }
+
+        # Determine which detectors are enabled from config.
+        # Uses get_detector_config() which reads the per-detector
+        # *_enabled flags (e.g. arp_spoof_enabled) from the DETECTORS section.
+        try:
+            detector_config = config.get_detector_config()
+        except Exception as exc:
+            logger.warning(f"MonitoringManager: DETECTORS config parse error: {exc}")
+            detector_config = {}
+
+        for name, detector in all_detectors.items():
+            enabled = detector_config.get(name, True)
+            if not enabled:
+                logger.info(f"MonitoringManager: detector '{name}' disabled by config")
+                continue
+            self.register_detector(name, detector)
+
+    # ------------------------------------------------------------------
+    # Public lifecycle
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        """Start packet capture, detectors, and scheduler."""
+        with self._state_lock:
+            if self._monitoring:
+                logger.warning("MonitoringManager: already running")
+                return
+            self._monitoring = True
+            self._started_at = datetime.utcnow()
+            self._stopped_at = None
+            self.statistics.set_session_started_at(self._started_at)
+
+        # 1. Attach network monitor as a passive packet listener.
+        self.dispatcher.register("network_monitor", self.network_monitor.handle_packet)
+
+        # 2. Register all detectors and start their threads.
+        for name, detector in self._detectors.items():
+            try:
+                detector.start()
+                self._detector_threads[name] = detector.get_thread()
+                logger.info(f"MonitoringManager: started detector '{name}'")
+            except Exception as exc:
+                logger.error(f"MonitoringManager: failed to start detector '{name}': {exc}")
+
+        # 3. Start the single sniffer.
+        if not self.dispatcher.start():
+            logger.error(
+                "MonitoringManager: packet capture failed to start — "
+                "run as Administrator and ensure Npcap is installed"
+            )
+            # Roll back: stop detectors and unregister listeners so a
+            # subsequent start() attempt is clean.
+            for name, detector in self._detectors.items():
+                try:
+                    detector.stop()
+                except Exception:
+                    pass
+            try:
+                self.dispatcher.unregister("network_monitor")
+                for name in list(self._detectors.keys()):
+                    self.dispatcher.unregister(name)
+            except Exception:
+                pass
+            self._detector_threads = {name: None for name in self._detectors}
+            with self._state_lock:
+                self._monitoring = False
+            return
+
+        # 4. Schedule periodic jobs.
+        self._configure_scheduler()
+        self.scheduler.start()
+
+        logger.info(
+            f"MonitoringManager: monitoring started on interface "
+            f"'{self.interface}' (psutil={self.interface_psutil}, "
+            f"local_ip={self.local_ip}) with {len(self._detectors)} detectors"
+        )
+
+    def stop(self) -> None:
+        """Stop capture, detectors, and scheduler cleanly."""
+        with self._state_lock:
+            if not self._monitoring:
+                logger.warning("MonitoringManager: not running")
+                return
+            self._monitoring = False
+            self._stopped_at = datetime.utcnow()
+
+        # 1. Stop periodic jobs.
+        try:
+            self.scheduler.stop()
+        except Exception as exc:
+            logger.error(f"MonitoringManager: scheduler stop error: {exc}")
+
+        # 2. Stop the sniffer.
+        try:
+            self.dispatcher.stop()
+        except Exception as exc:
+            logger.error(f"MonitoringManager: dispatcher stop error: {exc}")
+
+        # 3. Stop all detectors (flush pending state).
+        for name, detector in self._detectors.items():
+            try:
+                detector.stop()
+            except Exception as exc:
+                logger.error(f"MonitoringManager: error stopping detector '{name}': {exc}")
+
+        # 4. Unregister all listeners so restart() does not double-fan-out.
+        #    This prevents duplicate packet processing on repeated start/stop.
+        try:
+            self.dispatcher.unregister("network_monitor")
+            for name in list(self._detectors.keys()):
+                self.dispatcher.unregister(name)
+        except Exception as exc:
+            logger.error(f"MonitoringManager: listener unregister error: {exc}")
+
+        # Reset detector thread references.
+        self._detector_threads = {name: None for name in self._detectors}
+
+        logger.info("MonitoringManager: monitoring stopped")
+
+    def restart(self) -> None:
+        """Restart monitoring (stop then start)."""
+        self.stop()
+        time.sleep(0.5)
+        self._restart_count += 1
+        self.start()
+        logger.info(f"MonitoringManager: restarted (count={self._restart_count})")
+
+    # ------------------------------------------------------------------
+    # Detector registration
+    # ------------------------------------------------------------------
+    def register_detector(self, name: str, detector: Any) -> None:
+        """Register a detector and connect it to the dispatcher + alert manager.
+
+        The detector must expose:
+            start() / stop() / get_thread() / handle_packet(packet)
+            status() / health() / statistics()
+        """
+        if hasattr(detector, "set_alert_callback"):
+            detector.set_alert_callback(self.alert_manager.raise_alert)
+        if hasattr(detector, "set_network_monitor"):
+            detector.set_network_monitor(self.network_monitor)
+
+        self._detectors[name] = detector
+        self.dispatcher.register(name, detector.handle_packet)
+        self._detector_threads[name] = None
+        self._thread_health[name] = {
+            "last_heartbeat": datetime.utcnow(),
+            "alive": False,
+            "restarts": 0,
+        }
+        logger.info(f"MonitoringManager: registered detector '{name}'")
+
+    # ------------------------------------------------------------------
+    # Health / status
+    # ------------------------------------------------------------------
+    def monitor_health(self) -> None:
+        """Periodic health check: restart crashed or stuck detector threads.
+
+        Two failure modes are detected:
+          1. Dead thread  — the detector's thread is no longer alive.
+          2. Stuck thread — the thread is alive BUT the dispatcher is
+             receiving packets while this detector processes none.
+
+        The "stuck" check is gated on dispatcher activity so an idle network
+        (no traffic) does not trigger false restarts. Detectors that are
+        simply idle because there is no matching traffic are left alone.
+        """
+        now = datetime.utcnow()
+        # Snapshot dispatcher activity to distinguish "no traffic" from
+        # "detector not consuming traffic".
+        try:
+            dispatcher_rx = self.dispatcher.packet_count
+        except Exception:
+            dispatcher_rx = 0
+
+        for name, thread in self._detector_threads.items():
+            if thread is None:
+                continue
+            alive = thread.is_alive()
+            self._thread_health[name]["alive"] = alive
+            self._thread_health[name]["last_heartbeat"] = now
+
+            detector = self._detectors.get(name)
+            processed = 0
+            try:
+                if hasattr(detector, "statistics"):
+                    stats = detector.statistics()
+                    processed = int(stats.get("packets_processed", 0) or 0)
+            except Exception:
+                pass
+
+            last_processed = self._thread_health[name].get("last_packet_count", 0)
+            self._thread_health[name]["last_packet_count"] = processed
+
+            # 1. Dead thread — restart unconditionally.
+            if not alive and self._monitoring:
+                logger.warning(f"MonitoringManager: detector thread '{name}' is dead; restarting")
+                try:
+                    detector.start()
+                    self._detector_threads[name] = detector.get_thread()
+                    self._thread_health[name]["restarts"] += 1
+                    self._thread_health[name]["alive"] = True
+                    self._thread_health[name]["last_packet_count"] = 0
+                except Exception as exc:
+                    logger.error(f"MonitoringManager: failed to restart '{name}': {exc}")
+                continue
+
+            # 2. Stuck thread — only when the dispatcher is actively receiving
+            #    packets but this detector processes none (so idle traffic does
+            #    not cause false restarts).
+            if (
+                alive
+                and self._monitoring
+                and dispatcher_rx > 0
+                and processed == last_processed
+            ):
+                logger.warning(
+                    f"MonitoringManager: detector '{name}' thread alive but "
+                    f"not processing packets while capture is active; restarting"
+                )
+                try:
+                    detector.stop()
+                    detector.start()
+                    self._detector_threads[name] = detector.get_thread()
+                    self._thread_health[name]["restarts"] += 1
+                    self._thread_health[name]["alive"] = True
+                    self._thread_health[name]["last_packet_count"] = 0
+                except Exception as exc:
+                    logger.error(f"MonitoringManager: failed to restart stuck '{name}': {exc}")
+
+    def status_dict(self) -> dict:
+        """Real monitoring state for /api/status."""
+        with self._state_lock:
+            monitoring = self._monitoring
+            started_at = self._started_at
+            stopped_at = self._stopped_at
+
+        uptime = 0
+        if started_at and monitoring:
+            uptime = (datetime.utcnow() - started_at).total_seconds()
+
+        proc = psutil.Process()
+        mem = psutil.virtual_memory()
+        db_status = self._check_db()
+
+        detector_status = {}
+        for name, detector in self._detectors.items():
+            try:
+                detector_status[name] = {
+                    "status": detector.status(),
+                    "thread_alive": bool(
+                        self._detector_threads.get(name) and self._detector_threads[name].is_alive()
+                    ),
+                    "restarts": self._thread_health.get(name, {}).get("restarts", 0),
+                }
+            except Exception as exc:
+                detector_status[name] = {"status": "error", "error": str(exc)}
+
+        # Normalize internal detector keys to the frontend DetectorKey convention.
+        # e.g. 'dhcp_spoofing' -> 'dhcp_spoof', 'http_injection' -> 'http_inject'
+        _key_map = {
+            'arp_spoof': 'arp_spoof',
+            'dhcp_spoofing': 'dhcp_spoof',
+            'dhcp_spoof': 'dhcp_spoof',
+            'dns_spoof': 'dns_spoof',
+            'http_injection': 'http_inject',
+            'http_inject': 'http_inject',
+            'icmp_redirect': 'icmp_redirect',
+            'rogue_access': 'rogue_access',
+            'ssl_strip': 'ssl_strip',
+        }
+        return {
+            "monitoring": monitoring,
+            "interface": self.interface,
+            "interface_psutil": self.interface_psutil,
+            "local_ip": self.local_ip,
+            "network_range": self.network_range,
+            "started_at": started_at.isoformat() + "Z" if started_at else None,
+            "stopped_at": stopped_at.isoformat() + "Z" if stopped_at else None,
+            "uptime_seconds": int(uptime),
+            "packet_count": self.dispatcher.packet_count,
+            "packets_per_second": round(self.dispatcher.packet_rate(), 2),
+            "dropped_packets": self.dispatcher.dropped_count,
+            "detectors_enabled": {
+                _key_map.get(name, name): det.status() == "running"
+                for name, det in self._detectors.items()
+            },
+            "detector_status": detector_status,
+            "thread_status": {
+                name: {"alive": th.is_alive() if th else False, "restarts": self._thread_health.get(name, {}).get("restarts", 0)}
+                for name, th in self._detector_threads.items()
+            },
+            "system": {
+                "cpu_percent": psutil.cpu_percent(interval=None),
+                "memory_percent": mem.percent,
+                "process_cpu_percent": proc.cpu_percent(interval=None),
+                "process_memory_mb": round(proc.memory_info().rss / (1024 * 1024), 2),
+            },
+            "database": db_status,
+            "dispatcher": self.dispatcher.status_dict(),
+            "scheduler": self.scheduler.status_dict(),
+            "network_monitor": self.network_monitor.status_dict(),
+            "alert_manager": self.alert_manager.health_dict(),
+            "restart_count": self._restart_count,
+        }
+
+    def _check_db(self) -> dict:
+        try:
+            with self._db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                return {"connected": True, "error": None}
+        except Exception as exc:
+            return {"connected": False, "error": str(exc)}
+
+    def _device_discovered_callback(self, device: Optional[dict]) -> None:
+        """Callback invoked by NetworkMonitor when a new device is discovered."""
+        if not self._emit_callback or not device:
+            return
+        try:
+            self._emit_callback("device_discovered", device)
+        except Exception as exc:
+            logger.error(f"MonitoringManager: device_discovered emit error: {exc}")
+
+    def network_data(self) -> dict:
+        """Real network data for /api/network (no fake devices)."""
+        devices = self.network_monitor.devices()
+        return {
+            "gateway": self.network_monitor.get_gateway(),
+            "interface": self.interface,
+            "packet_count": self.dispatcher.packet_count,
+            "packet_rate": round(self.dispatcher.packet_rate(), 2),
+            "devices": devices,
+        }
+
+    def statistics_data(self) -> dict:
+        """Live statistics for /api/statistics."""
+        self.statistics.set_packet_metrics(
+            self.dispatcher.packet_count, self.dispatcher.packet_rate()
+        )
+        return self.statistics.get_statistics()
+
+    def detector_health(self) -> List[dict]:
+        """Live health for every registered detector."""
+        result = []
+        for name, detector in self._detectors.items():
+            try:
+                health = detector.health() if hasattr(detector, "health") else {}
+                health.setdefault("detector", name)
+                result.append(health)
+            except Exception as exc:
+                result.append({"detector": name, "status": "error", "error": str(exc)})
+        return result
+
+    def detector_statistics(self) -> dict:
+        """Runtime statistics from every detector (no fabricated values)."""
+        result = {}
+        for name, detector in self._detectors.items():
+            try:
+                if hasattr(detector, "statistics"):
+                    result[name] = detector.statistics()
+                else:
+                    result[name] = {}
+            except Exception as exc:
+                result[name] = {"error": str(exc)}
+        return result
+
+    def rogue_data(self) -> dict:
+        """Rogue-AP data from the rogue_access detector (real only)."""
+        detector = self._detectors.get("rogue_access")
+        if detector is None:
+            return {"authorized_aps": [], "nearby_aps": []}
+        try:
+            return {
+                "authorized_aps": detector.authorized_list(),
+                "nearby_aps": detector.nearby_aps(),
+            }
+        except Exception as exc:
+            logger.error(f"MonitoringManager: rogue data error: {exc}")
+            return {"authorized_aps": [], "nearby_aps": []}
+
+    def ssl_data(self) -> dict:
+        """SSL strip data from the ssl_strip detector (real only)."""
+        detector = self._detectors.get("ssl_strip")
+        if detector is None:
+            return {"sessions": [], "warnings": []}
+        try:
+            return {
+                "sessions": detector.sessions_data(),
+                "warnings": detector.warnings_data(),
+            }
+        except Exception as exc:
+            logger.error(f"MonitoringManager: ssl data error: {exc}")
+            return {"sessions": [], "warnings": []}
+
+    # ------------------------------------------------------------------
+    # Scheduler configuration
+    # ------------------------------------------------------------------
+    def _configure_scheduler(self) -> None:
+        self.scheduler.add_job(
+            "network_scan",
+            self.network_monitor.scan,
+            interval_seconds=self.scan_interval,
+        )
+        self.scheduler.add_job(
+            "log_cleanup",
+            self._cleanup_logs,
+            interval_seconds=3600,
+        )
+        self.scheduler.add_job(
+            "stats_refresh",
+            self.statistics.refresh,
+            interval_seconds=60,
+        )
+        self.scheduler.add_job(
+            "health_check",
+            self.monitor_health,
+            interval_seconds=300,
+        )
+
+    def _cleanup_logs(self) -> None:
+        try:
+            retention = int(get_config().get("SYSTEM", "data_retention_days", 30))
+            self._db.cleanup_old_logs(retention_days=retention)
+            logger.info("MonitoringManager: log cleanup completed")
+        except Exception as exc:
+            logger.error(f"MonitoringManager: log cleanup error: {exc}")
+
+    # ------------------------------------------------------------------
+    # Packet filter
+    # ------------------------------------------------------------------
+    def _build_filter(self) -> str:
+        """Build a BPF filter capturing the traffic our detectors need.
+
+        ARP, DNS/UDP/53, DHCP (67/68), HTTP (80/8080/3000), HTTPS (443),
+        ICMP. Rogue-AP detection needs monitor-mode 802.11 frames which are
+        not BPF-filterable in the same way; they are captured by the raw
+        sniffer without a filter when in monitor mode.
+        """
+        return (
+            "arp or udp port 53 or udp port 67 or udp port 68 or "
+            "tcp port 80 or tcp port 8080 or tcp port 443 or "
+            "tcp port 3000 or icmp"
+        )
+
+    @property
+    def is_monitoring(self) -> bool:
+        with self._state_lock:
+            return self._monitoring

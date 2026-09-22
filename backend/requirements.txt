@@ -1,0 +1,13 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.0.0
+websockets>=12.0
+psutil==6.0.0
+scapy==2.6.1
+# Windows notes: ShadowPulse requires a packet capture provider on Windows.
+# Install Npcap (https://nmap.org/npcap/) with "WinPcap compatible mode" enabled
+# and run ShadowPulse as Administrator. The Python package list does not
+# include Npcap (OS installer). Optional helpers for Windows debugging:
+# pywin32 (for Windows APIs) and pydivert (alternative capture path).
+pywin32==312
+pydivert==3.1.3

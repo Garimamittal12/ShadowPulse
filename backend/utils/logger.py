@@ -6,13 +6,15 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
+from utils.paths import LOG_DIR
+
 class Logger:
     """Enhanced logging system for SHADOWPULSE"""
     
-    def __init__(self, name: str = 'shadowpulse', log_dir: str = 'logs'):
+    def __init__(self, name: str = 'shadowpulse', log_dir: str | Path = LOG_DIR):
         self.name = name
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
@@ -105,7 +107,7 @@ class Logger:
         message = f"DETECTOR [{detector}] - {action}: {details}"
         self.logger.info(message)
 
-def setup_logging(log_level: str = 'INFO', log_dir: str = 'logs') -> Logger:
+def setup_logging(log_level: str = 'INFO', log_dir: str | Path = LOG_DIR) -> Logger:
     """Setup global logging configuration"""
     # Set root logger level
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)

@@ -1,6 +1,6 @@
 """
 Dashboard FastAPI router for ShadowPulse.
-CONVERTED: Flask Blueprint → FastAPI APIRouter
+FastAPI APIRouter
 Provides system + security metrics from LIVE sources (psutil + SQLite + MonitoringManager).
 No mock/hardcoded data.
 """

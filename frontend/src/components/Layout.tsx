@@ -9,6 +9,8 @@ const TITLES: Record<PageId, string> = {
   live: 'Live Monitoring',
   analytics: 'Attack Analytics',
   devices: 'Connected Devices',
+  rogue: 'Rogue Access Points',
+  ssl: 'SSL Strip Monitor',
   logs: 'Alert Logs',
   settings: 'Settings',
 };

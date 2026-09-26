@@ -6,6 +6,8 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { LivePage } from '@/pages/LivePage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { DevicesPage } from '@/pages/DevicesPage';
+import { RogueAccessPage } from '@/pages/RogueAccessPage';
+import { SSLStripPage } from '@/pages/SSLStripPage';
 import { LogsPage } from '@/pages/LogsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 
@@ -19,6 +21,8 @@ function App() {
         {page === 'live' && <LivePage />}
         {page === 'analytics' && <AnalyticsPage />}
         {page === 'devices' && <DevicesPage />}
+        {page === 'rogue' && <RogueAccessPage />}
+        {page === 'ssl' && <SSLStripPage />}
         {page === 'logs' && <LogsPage />}
         {page === 'settings' && <SettingsPage />}
       </Layout>

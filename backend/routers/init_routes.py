@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from utils.database import get_db_manager
+from utils.paths import ensure_runtime_directories, LOG_DIR, EXPORT_DIR, REPORT_DIR, CAPTURE_DIR
 
 router = APIRouter(prefix="/init", tags=["init"])
 
@@ -57,9 +58,7 @@ def initialize_system():
         create_database_tables()
         insert_default_data()
         
-        directories = ['logs', 'exports', 'reports', 'captures']
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
+        ensure_runtime_directories()
         
         return {
             'status': 'success',
@@ -196,8 +195,8 @@ def health_check():
         disk_usage_percent = (used_b / total_b) * 100 if total_b > 0 else 0.0
 
         # Check if critical directories exist
-        required_dirs = ['logs', 'exports', 'reports', 'captures']
-        dirs_exist = all(os.path.exists(d) for d in required_dirs)
+        required_dirs = [LOG_DIR, EXPORT_DIR, REPORT_DIR, CAPTURE_DIR]
+        dirs_exist = all(directory.exists() for directory in required_dirs)
 
         health_status = {
             'database': 'healthy' if db_healthy else 'unhealthy',

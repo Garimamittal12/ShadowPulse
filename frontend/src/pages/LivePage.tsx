@@ -65,7 +65,7 @@ export function LivePage() {
     <div className="space-y-5">
       <PageHeader
         title="Live Monitoring"
-        subtitle="Real-time packet and threat feed — auto-refreshes every 3 seconds"
+        subtitle="Real-time packet and threat feed — alert updates arrive over WebSocket"
         action={<HealthIndicator size="sm" />}
       />
 
@@ -158,7 +158,7 @@ export function LivePage() {
         </div>
 
         {/* Active detectors + stacked severity + timeline */}
-        <div className="space-y-4">
+        <div className="contents">
           <SectionCard title="Active Detectors" subtitle="Per-detector monitoring status">
             <div className="space-y-2">
               {(Object.keys(DETECTORS) as DetectorKey[]).map((key) => {
@@ -183,7 +183,8 @@ export function LivePage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Alerts by Severity" subtitle="Stacked alert count over the last few minutes">
+          <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <SectionCard title="Alerts by Severity" subtitle="Recent severity trend">
             <div className="h-48">
               {severityHistory.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-xs text-ink-500">Waiting for data...</div>
@@ -203,8 +204,8 @@ export function LivePage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Event Timeline" subtitle="Recent alerts over time">
-            <div className="relative pl-4">
+          <SectionCard title="Event Timeline" subtitle="Recent alerts">
+            <div className="relative pl-4 max-h-48 overflow-y-auto">
               <div className="absolute left-1.5 top-0 bottom-0 w-px bg-soc-border" />
               {alerts.slice(0, 8).map((a) => (
                 <div key={a.id} className="relative pb-3">
@@ -219,6 +220,7 @@ export function LivePage() {
               {alerts.length === 0 && <div className="text-xs text-ink-500 py-4">No events yet.</div>}
             </div>
           </SectionCard>
+          </div>
         </div>
       </div>
     </div>

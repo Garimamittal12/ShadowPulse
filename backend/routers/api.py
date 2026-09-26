@@ -75,9 +75,9 @@ def _parse_details(details_raw) -> dict:
     return details
 
 
-def _extract_alert_type(detector: str, details: dict) -> str:
+def _extract_alert_type(detector: str, details: dict, stored_alert_type: str | None = None) -> str:
     """Preserve the real alert_type from details, falling back to detector_detected."""
-    alert_type = details.get("alert_type")
+    alert_type = stored_alert_type or details.get("alert_type")
     if alert_type and isinstance(alert_type, str):
         return alert_type
     return f"{detector}_detected"
@@ -122,7 +122,7 @@ def get_alerts(request: Request, limit: int = Query(100, ge=1, le=1000)):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, timestamp, detector_type, severity, source_ip, target_ip, "
+            "SELECT id, timestamp, detector_type, alert_type, severity, source_ip, target_ip, "
             "source_mac, target_mac, protocol, description, details "
             "FROM alerts WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
             (session_started_at.strftime("%Y-%m-%d %H:%M:%S"), limit),
@@ -143,7 +143,7 @@ def get_alerts(request: Request, limit: int = Query(100, ge=1, le=1000)):
             'id': str(row['id']),
             'timestamp': str(row['timestamp']),
             'detector': detector,
-            'alert_type': _extract_alert_type(detector, details),
+            'alert_type': _extract_alert_type(detector, details, row['alert_type']),
             'severity': severity,
             'source_ip': row['source_ip'],
             'target_ip': row['target_ip'],
@@ -231,7 +231,7 @@ def get_logs(limit: int = Query(200, ge=1, le=2000)):
             'id': str(row.get('id') if isinstance(row, dict) else row['id']),
             'timestamp': str(row.get('timestamp') if isinstance(row, dict) else row['timestamp']),
             'detector': detector,
-            'alert_type': _extract_alert_type(detector, details),
+            'alert_type': _extract_alert_type(detector, details, row.get('alert_type')),
             'severity': severity,
             'message': message,
             'source_ip': row.get('source_ip') if isinstance(row, dict) else row['source_ip'],

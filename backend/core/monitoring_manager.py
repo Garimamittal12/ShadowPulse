@@ -148,15 +148,21 @@ class MonitoringManager:
         """
         iface = self.interface
         config = get_config()
+        trusted_dhcp = config.get_list("BASELINES", "trusted_dhcp_servers")
+        trusted_dns = config.get_list("BASELINES", "trusted_dns_servers")
+        authorized_aps = config.get_authorized_aps()
+        monitor_mode = bool(config.get("NETWORK", "monitor_mode", False))
 
         # Build the full detector map.
         all_detectors = {
             "arp_spoof": ARPSpoofDetector(interface=iface),
-            "dns_spoof": DNSSpoofDetector(interface=iface),
-            "dhcp_spoofing": DHCPSpoofingDetector(interface=iface),
+            "dns_spoof": DNSSpoofDetector(interface=iface, trusted_dns_servers=trusted_dns),
+            "dhcp_spoofing": DHCPSpoofingDetector(interface=iface, authorized_servers=trusted_dhcp),
             "http_injection": HTTPInjectionDetector(interface=iface),
             "icmp_redirect": ICMPRedirectDetector(interface=iface),
-            "rogue_access": RogueAccessDetector(interface=iface),
+            "rogue_access": RogueAccessDetector(
+                interface=iface, authorized_aps=authorized_aps, monitor_mode=monitor_mode
+            ),
             "ssl_strip": SSLStripDetector(interface=iface),
         }
 
@@ -369,25 +375,9 @@ class MonitoringManager:
             # 2. Stuck thread — only when the dispatcher is actively receiving
             #    packets but this detector processes none (so idle traffic does
             #    not cause false restarts).
-            if (
-                alive
-                and self._monitoring
-                and dispatcher_rx > 0
-                and processed == last_processed
-            ):
-                logger.warning(
-                    f"MonitoringManager: detector '{name}' thread alive but "
-                    f"not processing packets while capture is active; restarting"
-                )
-                try:
-                    detector.stop()
-                    detector.start()
-                    self._detector_threads[name] = detector.get_thread()
-                    self._thread_health[name]["restarts"] += 1
-                    self._thread_health[name]["alive"] = True
-                    self._thread_health[name]["last_packet_count"] = 0
-                except Exception as exc:
-                    logger.error(f"MonitoringManager: failed to restart stuck '{name}': {exc}")
+            # Protocol-gated detectors may correctly process no packets while
+            # capture remains active. Thread liveness is the safe health
+            # signal; restarting on unrelated traffic discards baselines.
 
     def status_dict(self) -> dict:
         """Real monitoring state for /api/status."""
@@ -407,12 +397,15 @@ class MonitoringManager:
         detector_status = {}
         for name, detector in self._detectors.items():
             try:
+                health = detector.health() if hasattr(detector, "health") else {}
                 detector_status[name] = {
                     "status": detector.status(),
                     "thread_alive": bool(
                         self._detector_threads.get(name) and self._detector_threads[name].is_alive()
                     ),
                     "restarts": self._thread_health.get(name, {}).get("restarts", 0),
+                    "capability": health.get("capability", "active"),
+                    "limitation": health.get("limitation"),
                 }
             except Exception as exc:
                 detector_status[name] = {"status": "error", "error": str(exc)}
@@ -430,6 +423,9 @@ class MonitoringManager:
             'rogue_access': 'rogue_access',
             'ssl_strip': 'ssl_strip',
         }
+        normalized_detector_status = {
+            _key_map.get(name, name): value for name, value in detector_status.items()
+        }
         return {
             "monitoring": monitoring,
             "interface": self.interface,
@@ -446,7 +442,7 @@ class MonitoringManager:
                 _key_map.get(name, name): det.status() == "running"
                 for name, det in self._detectors.items()
             },
-            "detector_status": detector_status,
+            "detector_status": normalized_detector_status,
             "thread_status": {
                 name: {"alive": th.is_alive() if th else False, "restarts": self._thread_health.get(name, {}).get("restarts", 0)}
                 for name, th in self._detector_threads.items()

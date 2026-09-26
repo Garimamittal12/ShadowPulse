@@ -11,7 +11,7 @@ Detectors never touch the database or the API directly. They call
     - enriching with runtime metadata
     - inserting into SQLite (thread-safe)
     - maintaining an in-memory alert cache for fast API reads
-    - emitting WebSocket events to the frontend (when SocketIO is attached)
+    - emitting WebSocket events to connected clients
 
 The manager is fully thread-safe: detectors run in daemon threads and call
 ``raise_alert`` concurrently.
@@ -51,7 +51,7 @@ class AlertManager:
         self.cooldown_seconds = cooldown_seconds
         self.max_cache_size = max_cache_size
 
-        # Callback used to push realtime notifications (e.g., socketio.emit).
+        # Callback used to push real-time notifications to WebSocket clients.
         # Signature: emit_callback(event_name: str, data: dict) -> None
         self._emit_callback = emit_callback
 
@@ -88,7 +88,10 @@ class AlertManager:
         duplicate), or ``None`` if it was suppressed by the de-duplication
         window.
         """
-        details = details or {}
+        details = dict(details or {})
+        # Preserve the type in legacy JSON details as well as the dedicated
+        # database column, so older databases and exports remain readable.
+        details.setdefault("alert_type", alert_type)
         severity = self._normalize_severity(severity, details)
         description = description or details.get("description") or (
             f"{alert_type} detected by {detector}"
@@ -129,6 +132,13 @@ class AlertManager:
 
         # Persist to SQLite.
         alert_id = self._persist(alert_dict)
+        if not alert_id:
+            # A detector event may be logged by its caller, but it must not be
+            # represented as an accepted/durable API alert when SQLite failed.
+            logger.error(
+                f"AlertManager: dropping non-durable alert {detector}:{alert_type}"
+            )
+            return None
         alert_dict["id"] = str(alert_id)
 
         # Update the in-memory cache.
@@ -223,6 +233,7 @@ class AlertManager:
                 source_mac=alert["source_mac"],
                 target_mac=alert["target_mac"],
                 protocol=alert["protocol"],
+                alert_type=alert["alert_type"],
                 details=alert["details"],
             )
         except Exception as exc:
@@ -241,7 +252,7 @@ class AlertManager:
             logger.error(f"AlertManager: notification callback error: {exc}")
 
     def attach_emitter(self, callback: Callable[[str, Any], None]) -> None:
-        """Attach a realtime emitter (e.g., socketio.emit)."""
+        """Attach a real-time WebSocket event emitter."""
         self._emit_callback = callback
 
     # ------------------------------------------------------------------

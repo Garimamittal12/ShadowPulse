@@ -1,8 +1,6 @@
 # ShadowPulse - Real-Time MITM Attack Detection System
 
-ShadowPulse is a **real-time Man-in-the-Middle (MITM) attack detection system**. It continuously inspects network traffic for common MITM attack techniques-ARP/DNS/DHCP spoofing, SSL stripping, rogue access points, ICMP redirection, and HTTP injection-raises severity-ranked alerts, and visualizes the results in a live React dashboard.
-
-It combines a **Python/Flask detection backend** with a **React + TypeScript + Tailwind dashboard** to give security analysts an at-a-glance view of their network's health, active threats, connected devices, and detailed attack analytics.
+ShadowPulse is a network monitoring and MITM detection project. Its FastAPI backend captures packets through one shared Scapy `PacketDispatcher`, runs the enabled detectors, stores alerts and network observations in SQLite, and serves data to a React dashboard. The dashboard receives alert and device events over WebSocket and refreshes REST snapshots every 30 seconds. Detection is heuristic: an alert is evidence to investigate, not proof of a confirmed attack.
 
 ---
 
@@ -13,10 +11,10 @@ It combines a **Python/Flask detection backend** with a **React + TypeScript + T
 - **7 built-in detectors** covering common Layer-2/3/4/7 attacks 
 - **SQLite persistence** of alerts, devices, and detector status
 - **Configurable monitoring** via `shadowpulse.conf` and environment variables
-- **Multi-process detector runner** to monitor several attack vectors concurrently
+- **One centralized Scapy capture dispatcher** shared by all detector modules
 
 ### Dashboard (Frontend)
-- **Live monitoring** with automatic polling every 3 seconds
+- **Live monitoring** with WebSocket alert/device events and REST recovery refresh
 - **Attack analytics** with charts, severity breakdowns, and trend heatmaps
 - **Network topology** view of discovered devices and suspicious hosts
 - **Rogue Access Point** monitor (evil-twin / SSID impersonation detection)
@@ -31,18 +29,18 @@ It combines a **Python/Flask detection backend** with a **React + TypeScript + T
 
 | Layer | Technology | Port |
 |-------|-----------|------|
-| Backend API | Python · Flask · Flask-CORS | `5000` |
+| Backend API | Python · FastAPI · Uvicorn | `5000` |
 | Database | SQLite | file `shadowpulse.db` |
 | Packet Capture | Scapy | — |
-| Frontend | React 18 · TypeScript · Vite · Tailwind CSS | `3000` |
+| Frontend | React 18 · TypeScript · Vite · Tailwind CSS | `5173` by default |
 | Charts | Recharts | — |
 | Icons | lucide-react | — |
 
 ```
 ┌─────────────────────────────┐        ┌──────────────────────────────┐
-│        React Frontend       │  HTTP  │        Flask Backend         │
-│  Dashboard · Live · Charts  │ ─────▶ │  /api/*  (REST endpoints)    │
-│  Rogue · SSL · Logs · etc.  │        │  Detectors (scapy sniffers)  │
+│        React Frontend       │ REST + WebSocket │ FastAPI Backend       │
+│  Dashboard · Live · Charts  │ ◀───────────────▶ │ /api/* + /ws           │
+│  Rogue · SSL · Logs · etc.  │                  │ Shared Scapy capture  │
 └─────────────────────────────┘        └──────────────┬───────────────┘
                                                       │
                                               ┌───────▼───────┐
@@ -50,6 +48,35 @@ It combines a **Python/Flask detection backend** with a **React + TypeScript + T
                                               │ shadowpulse.db│
                                               └───────────────┘
 ```
+
+## Project Structure
+
+```text
+ShadowPulse/
+├── backend/
+│   ├── app.py                  # FastAPI entry point and WebSocket
+│   ├── shadowpulse.conf       # Backend configuration
+│   ├── requirements.txt
+│   ├── core/                  # Monitoring, packet dispatch, alerts, stats
+│   ├── detectors/             # Seven packet detection modules
+│   ├── routers/               # /api and /init endpoints
+│   ├── routes/                # Dashboard, alert, device, log, network, report APIs
+│   ├── models/                # Alert, device, log, and network dataclasses
+│   ├── tests/                 # Backend regression tests
+│   └── utils/                 # Config, database, logging, paths, scanner, parser
+│       └── log_parser.py      # Parser utility; exported by utils/__init__.py
+├── frontend/
+│   ├── public/
+│   └── src/
+│       ├── components/
+│       ├── context/
+│       ├── lib/               # API client, types, mock data, formatting
+│       └── pages/
+├── README.md
+└── .gitignore
+```
+
+The model dataclasses are present but are not currently used by backend routes or persistence, which work with SQLite rows and dictionaries. `utils/log_parser.py` provides packet/log parsing classes and is re-exported from `utils/__init__.py`; the active packet detection pipeline uses the detector modules and shared dispatcher instead. Keep these modules if you plan to use those interfaces; they are not required by the current monitoring flow.
 
 ---
 
@@ -126,23 +153,7 @@ The first time you run the backend (or to reset it), initialize the schema and d
 curl -X POST http://localhost:5000/init/setup
 ```
 
-#### (Optional) Seed sample data
-
-To populate the dashboard with realistic sample alerts and devices:
-
-```bash
-cd backend
-python seed_data.py
-```
-
-#### (Optional) Run the detectors
-
-To start **all** packet-capture detectors as separate processes:
-
-```bash
-cd backend
-python detector_running.py
-```
+The backend starts all enabled detectors through one shared packet dispatcher; do not run detector modules as separate processes.
 
 ### 2. Frontend Setup (in a new terminal)
 
@@ -152,11 +163,11 @@ npm install
 npm start
 ```
 
-The frontend runs at **http://localhost:3000**.
+The frontend runs at the Vite URL shown by the command, normally **http://localhost:5173**.
 
 ### 3. Access the Dashboard
 
-Open **http://localhost:3000** in your browser. The dashboard polls the backend every 3 seconds and displays live threat status.
+Open **http://localhost:5173** in your browser. The dashboard receives alert/device events over WebSocket and refreshes REST snapshots after reconnects.
 
 ---
 
@@ -194,13 +205,18 @@ The frontend reads two environment variables (optionally set in `frontend/.env`)
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `VITE_API_BASE_URL` | `http://localhost:5000` | Backend API base URL |
-| `VITE_USE_MOCK` | `true` | When `false`, attempts to reach the real backend; falls back to mock data on failure |
+| `VITE_WS_URL` | Derived from `VITE_API_BASE_URL` as `ws://.../ws` | Backend WebSocket URL |
+| `VITE_USE_MOCK` | `false` | Set to `true` to use generated mock data instead of backend requests |
 
 > **Example:** To force the frontend to use the live backend:
 >
 > ```bash
 > VITE_USE_MOCK=false VITE_API_BASE_URL=http://localhost:5000 npm start
 > ```
+
+### Runtime data locations
+
+The canonical database is `backend/shadowpulse.db`, and application logs are written under `backend/logs/`, regardless of the launch directory. Initialization creates the expected runtime directories under `backend/`. Report and log export endpoints currently write to an `exports/` directory relative to the backend process's working directory; the documented startup commands run the process from `backend/`. Existing root-level database files are separate and are not automatically migrated.
 
 ---
 
@@ -222,7 +238,7 @@ Each detector module can be individually enabled or disabled via the `[DETECTORS
 
 ## API Reference
 
-The backend exposes a consolidated REST API under `/api/*`.
+The backend exposes the dashboard snapshot and monitoring-control API under `/api/*`, plus feature endpoints under `/dashboard`, `/alerts`, `/devices`, `/logs`, `/network`, and `/reports`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -236,11 +252,20 @@ The backend exposes a consolidated REST API under `/api/*`.
 | `POST` | `/api/start` | Start monitoring |
 | `POST` | `/api/stop` | Stop monitoring |
 | `POST` | `/api/scan` | Trigger a network scan |
+| `GET` | `/dashboard/stats` | System and security summary metrics |
+| `GET` | `/alerts/` | Stored alerts; `/alerts/stats` returns alert summaries |
+| `GET` | `/devices/` | Discovered devices |
+| `GET` | `/logs/` | Stored network log entries |
+| `GET` | `/network/topology` | Network topology data |
+| `GET` | `/reports/security-summary` | Security summary report |
+| `GET` | `/reports/threat-analysis` | Threat analysis report |
+| `GET` | `/reports/compliance` | Compliance summary |
+| `POST` | `/reports/export` | Export a report |
 | `POST` | `/init/setup` | Initialize DB schema & default data |
 | `GET` | `/init/status` | System initialization status |
 | `GET` | `/init/health` | Backend health check |
 
-Legacy blueprint routes are also mounted under `/legacy/*` for backward compatibility.
+The React client loads snapshots through FastAPI REST endpoints and receives alert/device events over `/ws`. A periodic REST refresh recovers state after reconnects and catches updates missed while disconnected. With `VITE_USE_MOCK=false`, backend request failures are surfaced to the dashboard; mock data is used only when mock mode is explicitly enabled.
 
 ---
 
@@ -265,10 +290,10 @@ Legacy blueprint routes are also mounted under `/legacy/*` for backward compatib
 |-------|-----|
 | **CORS errors in the dashboard** | Ensure the backend is running and CORS is enabled (`[API] cors_enabled = True`). Restart the backend after changes. |
 | **Database errors** | Run the init endpoint: `curl -X POST http://localhost:5000/init/setup` |
-| **No data on the dashboard** | Start the detector runner (`python detector_running.py`) or seed sample data (`python seed_data.py`). |
+| **No live data on the dashboard** | Confirm `VITE_USE_MOCK=false`, start the backend from `backend/`, and check capture privileges/Npcap and the configured interface. |
 | **Dashboard shows offline** | Confirm backend is on `localhost:5000`, or set `VITE_API_BASE_URL` to the correct backend URL. |
 | **Packet capture errors** | Verify the interface in `[NETWORK] interface` exists and that you have the required privileges / Npcap installed. |
-| **Want to run without a capture interface** | Use mock data mode (default `VITE_USE_MOCK=true`) so the dashboard works standalone. |
+| **Want to view the dashboard without the backend** | Set `VITE_USE_MOCK=true` in `frontend/.env` to use generated mock data. |
 
 ---
 

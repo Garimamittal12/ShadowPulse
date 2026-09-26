@@ -1,8 +1,4 @@
-"""
-routes/__init__.py — ShadowPulse FastAPI sub-router exports.
-REPLACED: Flask Blueprint init → FastAPI APIRouter exports.
-Imports all converted routers so app.py can register them cleanly.
-"""
+"""FastAPI feature-router exports."""
 
 from routes.alerts import router as alerts_router
 from routes.dashboard import router as dashboard_router

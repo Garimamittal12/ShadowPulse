@@ -1,4 +1,4 @@
-// Core data types for ShadowPulse — mirrors the Flask backend API shapes.
+// Core data types for ShadowPulse — mirrors the FastAPI backend API shapes.
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type DetectorKey =
@@ -59,6 +59,7 @@ export interface Statistics {
   week_comparison?: { day: string; thisWeek: number; lastWeek: number }[];
   detector_health?: { detector: DetectorKey; uptime: number; detections_today: number }[];
   daily_volume?: { day: string; count: number }[];
+  threat_score?: number;
 }
 
 export interface HeatmapCell {
@@ -79,9 +80,16 @@ export interface LogEntry {
 export interface MonitoringStatus {
   monitoring: boolean;
   interface: string;
+  local_ip?: string;
+  network_range?: string;
   started_at?: string;
   uptime_seconds?: number;
-  detectors_enabled: Record<DetectorKey, boolean>;
+  detectors_enabled: Partial<Record<DetectorKey, boolean>>;
+  detector_status?: Partial<Record<DetectorKey, {
+    status: string;
+    capability?: 'active' | 'limited' | 'unavailable';
+    limitation?: string | null;
+  }>>;
 }
 
 export interface AuthorizedAP {

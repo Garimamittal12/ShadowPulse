@@ -4,18 +4,23 @@ import configparser
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from utils.paths import CONFIG_PATH, resolve_backend_path
+
 class Config:
     """Configuration management for SHADOWPULSE"""
     
-    def __init__(self, config_file: str = 'shadowpulse.conf'):
-        self.config_file = config_file
+    def __init__(self, config_file: str | Path | None = None):
+        # Configuration is always loaded from the repository's backend
+        # directory unless a caller explicitly supplies a path (principally
+        # useful for isolated tests).
+        self.config_file = Path(config_file) if config_file else CONFIG_PATH
         self.config = configparser.ConfigParser()
         self._load_config()
         self._load_env_overrides()
     
     def _load_config(self):
         """Load configuration from file"""
-        if os.path.exists(self.config_file):
+        if self.config_file.exists():
             self.config.read(self.config_file)
         else:
             self._create_default_config()
@@ -59,9 +64,16 @@ class Config:
         
         self.config['DATABASE'] = {
             'type': 'sqlite',
+            # Relative database paths are resolved against backend/, never CWD.
             'path': 'shadowpulse.db',
             'pool_size': '10',
             'timeout': '30'
+        }
+
+        self.config['BASELINES'] = {
+            'trusted_dhcp_servers': '',
+            'trusted_dns_servers': '',
+            'authorized_aps': '[]'
         }
         
         self.config['API'] = {
@@ -109,7 +121,8 @@ class Config:
     
     def save_config(self):
         """Save configuration to file"""
-        with open(self.config_file, 'w') as f:
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with self.config_file.open('w', encoding='utf-8') as f:
             self.config.write(f)
     
     def get_detector_config(self) -> Dict[str, bool]:
@@ -136,6 +149,24 @@ class Config:
             'network_range': network_range,
             'timeout': self.get('NETWORK', 'timeout')
         }
+
+    def database_path(self) -> Path:
+        """Return the canonical, CWD-independent SQLite database path."""
+        return resolve_backend_path(self.get('DATABASE', 'path', 'shadowpulse.db'))
+
+    def get_list(self, section: str, key: str) -> list[str]:
+        """Read a comma-separated configuration value as normalized strings."""
+        value = self.get(section, key, '')
+        return [item.strip() for item in str(value or '').split(',') if item.strip()]
+
+    def get_authorized_aps(self) -> list[Dict[str, Any]]:
+        """Read explicitly authorized AP baselines, ignoring malformed entries."""
+        raw = self.get('BASELINES', 'authorized_aps', '[]')
+        try:
+            items = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return [item for item in items if isinstance(item, dict) and item.get('bssid')]
 
 # Global config instance
 _config_instance = None

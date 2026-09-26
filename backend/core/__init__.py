@@ -18,7 +18,7 @@ Core real-time monitoring architecture:
     AlertManager
           │
           ▼
-    SQLite → REST API → WebSocket → React Dashboard
+    SQLite → FastAPI REST snapshots + WebSocket events → React Dashboard
 
 Exposed components:
 - PacketDispatcher   : single sniffer + packet fan-out

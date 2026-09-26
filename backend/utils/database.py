@@ -9,8 +9,11 @@ from pathlib import Path
 class DatabaseManager:
     """Database management for SHADOWPULSE"""
     
-    def __init__(self, db_path: str = 'shadowpulse.db'):
-        self.db_path = db_path
+    def __init__(self, db_path: str | Path | None = None):
+        if db_path is None:
+            from utils.config import get_config
+            db_path = get_config().database_path()
+        self.db_path = str(Path(db_path).expanduser().resolve())
         self.lock = threading.RLock()
         # Configure WAL mode once at startup (not per-connection).
         with self.get_connection() as conn:
@@ -23,7 +26,21 @@ class DatabaseManager:
         """Initialize database with required tables"""
         with self.get_connection() as conn:
             self._create_tables(conn)
+            self._migrate_schema(conn)
             self._create_indexes(conn)
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection) -> None:
+        """Apply additive migrations without modifying or replacing user data."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts)")}
+        if "alert_type" not in columns:
+            conn.execute("ALTER TABLE alerts ADD COLUMN alert_type TEXT")
+            # Existing records retain the previous JSON representation.
+            conn.execute(
+                "UPDATE alerts SET alert_type = json_extract(details, '$.alert_type') "
+                "WHERE alert_type IS NULL AND json_valid(details)"
+            )
+        conn.commit()
     
     def _create_tables(self, conn: sqlite3.Connection):
         """Create all required database tables"""
@@ -33,6 +50,7 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     detector_type TEXT NOT NULL,
+                    alert_type TEXT,
                     severity TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high', 'critical')),
                     source_ip TEXT,
                     target_ip TEXT,
@@ -210,6 +228,7 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys = ON')
+        conn.execute('PRAGMA busy_timeout = 30000')
         try:
             yield conn
         finally:
@@ -218,14 +237,14 @@ class DatabaseManager:
     def insert_alert(self, detector_type: str, severity: str, description: str, 
                     source_ip: str = None, target_ip: str = None, **kwargs) -> int:
         """Insert new security alert"""
-        with self.get_connection() as conn:
+        with self.lock, self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO alerts (detector_type, severity, source_ip, target_ip, 
+                INSERT INTO alerts (detector_type, alert_type, severity, source_ip, target_ip,
                                   source_mac, target_mac, protocol, description, details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                detector_type, severity, source_ip, target_ip,
+                detector_type, kwargs.get('alert_type'), severity, source_ip, target_ip,
                 kwargs.get('source_mac'), kwargs.get('target_mac'),
                 kwargs.get('protocol'), description, json.dumps(kwargs.get('details', {}))
             ))
@@ -234,7 +253,7 @@ class DatabaseManager:
     
     def insert_network_log(self, source_ip: str, dest_ip: str, protocol: str, **kwargs) -> int:
         """Insert network traffic log entry"""
-        with self.get_connection() as conn:
+        with self.lock, self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO network_logs (source_ip, destination_ip, source_port, 
@@ -252,7 +271,7 @@ class DatabaseManager:
     
     def upsert_device(self, ip_address: str, **kwargs) -> int:
         """Insert or update device information"""
-        with self.get_connection() as conn:
+        with self.lock, self.get_connection() as conn:
             cursor = conn.cursor()
             # Try to get existing device
             cursor.execute('SELECT id FROM devices WHERE ip_address = ?', (ip_address,))
@@ -269,6 +288,7 @@ class DatabaseManager:
                         operating_system = COALESCE(?, operating_system),
                         open_ports = ?,
                         services = ?,
+                        risk_score = COALESCE(?, risk_score),
                         last_seen = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE ip_address = ?
@@ -277,7 +297,7 @@ class DatabaseManager:
                     kwargs.get('vendor'), kwargs.get('device_type'),
                     kwargs.get('operating_system'),
                     json.dumps(kwargs.get('open_ports', [])),
-                    json.dumps(kwargs.get('services', [])),
+                    json.dumps(kwargs.get('services', [])), kwargs.get('risk_score'),
                     ip_address
                 ))
                 conn.commit()
@@ -285,15 +305,15 @@ class DatabaseManager:
             else:
                 # Insert new device
                 cursor.execute('''
-                    INSERT INTO devices (ip_address, mac_address, hostname, vendor, 
-                                       device_type, operating_system, open_ports, services)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO devices (ip_address, mac_address, hostname, vendor,
+                                       device_type, operating_system, open_ports, services, risk_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     ip_address, kwargs.get('mac_address'), kwargs.get('hostname'),
                     kwargs.get('vendor'), kwargs.get('device_type'),
                     kwargs.get('operating_system'),
                     json.dumps(kwargs.get('open_ports', [])),
-                    json.dumps(kwargs.get('services', []))
+                    json.dumps(kwargs.get('services', [])), kwargs.get('risk_score', 0)
                 ))
                 conn.commit()
                 return cursor.lastrowid
@@ -401,10 +421,15 @@ def get_db_connection() -> sqlite3.Connection:
     """
     try:
         from utils.config import get_config
-        db_path = get_config().get('DATABASE', 'path', 'shadowpulse.db')
+        db_path = get_config().database_path()
     except Exception:
-        db_path = 'shadowpulse.db'
-    return sqlite3.connect(db_path, timeout=30.0)
+        from utils.paths import BACKEND_ROOT
+        db_path = BACKEND_ROOT / 'shadowpulse.db'
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute('PRAGMA busy_timeout = 30000')
+    return conn
 
 # Global database manager instance
 _db_manager = None

@@ -18,7 +18,7 @@ from core.monitoring_manager import MonitoringManager
 from routers.api import router as api_router
 from routers.init_routes import router as init_router
 
-# ── Converted FastAPI routers (routes/ directory — previously Flask Blueprints)
+# ── FastAPI feature routers (routes/ directory)
 from routes.alerts import router as alerts_router
 from routes.dashboard import router as dashboard_router
 from routes.devices import router as devices_router
@@ -64,15 +64,21 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+_event_loop = None
 
 
 def emit_event(event_name: str, data: dict) -> None:
     """General WebSocket event emitter wired to AlertManager and MonitoringManager."""
+    import asyncio
+
+    loop = _event_loop
+    if loop is None or not loop.is_running():
+        logger.debug(f"Emit event '{event_name}' skipped: WebSocket event loop is unavailable")
+        return
     try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(ws_manager.broadcast({"event": event_name, "data": data}))
+        asyncio.run_coroutine_threadsafe(
+            ws_manager.broadcast({"event": event_name, "data": data}), loop
+        )
     except Exception as exc:
         logger.debug(f"Emit event '{event_name}' warning: {exc}")
 
@@ -92,6 +98,9 @@ monitoring_manager = MonitoringManager(emit_callback=emit_alert)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic
+    global _event_loop
+    import asyncio
+    _event_loop = asyncio.get_running_loop()
     logger.info("Starting ShadowPulse FastAPI server...")
     if not monitoring_manager.is_monitoring:
         try:
@@ -107,6 +116,7 @@ async def lifespan(app: FastAPI):
         logger.info("ShadowPulse real-time monitoring engine stopped cleanly")
     except Exception as exc:
         logger.error(f"Error stopping monitoring engine: {exc}")
+    _event_loop = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +158,7 @@ app.include_router(api_router)    # prefix: /api
 app.include_router(init_router)   # prefix: /init
 
 # ---------------------------------------------------------------------------
-# Register routers — converted from Flask (routes/)
+# Register FastAPI feature routers (routes/)
 # FastAPI app
 #     |
 #     ├── /api/*         routers/api.py

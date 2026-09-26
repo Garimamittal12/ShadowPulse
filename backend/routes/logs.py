@@ -1,6 +1,6 @@
 """
 Logs FastAPI router for ShadowPulse.
-CONVERTED: Flask Blueprint → FastAPI APIRouter
+FastAPI APIRouter
 All DB access uses centralized utils.database.
 """
 

@@ -184,12 +184,14 @@ export const api = {
   },
 
   async getAll(): Promise<DashboardData> {
-    const [status, alerts, network, statistics, logs] = await Promise.all([
+    const [status, alerts, network, statistics, logs, rogueAccess, sslStrip] = await Promise.all([
       this.getStatus(),
       this.getAlerts(),
       this.getNetwork(),
       this.getStatistics(),
       this.getLogs(),
+      this.getRogueAccess(),
+      this.getSSLStrip(),
     ]);
 
     let packetHistory: number[];
@@ -237,8 +239,8 @@ export const api = {
       network,
       statistics,
       logs,
-      rogueAccess: { authorized_aps: [], nearby_aps: [] },
-      sslStrip: { sessions: [], warnings: [] },
+      rogueAccess,
+      sslStrip,
       packetHistory,
       trends,
       lastUpdated: Date.now(),

@@ -111,6 +111,9 @@ class NetworkMonitor:
 
         # Packet counters per device (ip -> packet count observed)
         self._packet_counts: Dict[str, int] = {}
+        # One summarized event per flow/protocol/minute; raw packets and
+        # payloads are deliberately never stored in SQLite.
+        self._last_summary_at: Dict[Tuple[str, str, str], datetime] = {}
         # Online/offline tracking (ip -> last_seen handled by _known_hosts)
         self._offline_timeout = 300  # seconds without traffic/scan => offline
 
@@ -175,6 +178,35 @@ class NetworkMonitor:
                 self._is_local_ip(dst_ip)):
             self._learn_device(dst_ip, dst_mac)
             self._count_packet(dst_ip)
+        if src_ip and dst_ip:
+            self._record_network_summary(packet, src_ip, dst_ip)
+
+    def _record_network_summary(self, packet, src_ip: str, dst_ip: str) -> None:
+        """Persist low-volume network activity summaries for dashboard metrics."""
+        try:
+            protocol = "ARP" if packet.haslayer("ARP") else "IP"
+            source_port = dest_port = None
+            if packet.haslayer("TCP"):
+                protocol = "TCP"
+                source_port, dest_port = packet["TCP"].sport, packet["TCP"].dport
+            elif packet.haslayer("UDP"):
+                protocol = "UDP"
+                source_port, dest_port = packet["UDP"].sport, packet["UDP"].dport
+            elif packet.haslayer("ICMP"):
+                protocol = "ICMP"
+            key = (src_ip, dst_ip, protocol)
+            now = datetime.utcnow()
+            with self._lock:
+                last = self._last_summary_at.get(key)
+                if last and (now - last).total_seconds() < 60:
+                    return
+                self._last_summary_at[key] = now
+            self._db.insert_network_log(
+                src_ip, dst_ip, protocol, source_port=source_port,
+                dest_port=dest_port, packet_size=len(packet)
+            )
+        except Exception as exc:
+            logger.debug(f"NetworkMonitor: summary logging error: {exc}")
 
     def _count_packet(self, ip: str) -> None:
         with self._lock:
@@ -349,9 +381,17 @@ class NetworkMonitor:
             if ip not in self._known_hosts:
                 self._learn_device(ip, None)
             self._risk_reasons.setdefault(ip, set()).add(reason)
-            # Cap at 100.
-            score = min(100, 10 * len(self._risk_reasons[ip]))
+            weights = {
+                "gateway_mac_change": 25, "arp_spoofing": 20,
+                "dns_response_conflict": 15, "unauthorized_dns_server": 15,
+                "unauthorized_dhcp_server": 20, "rogue_gateway": 20,
+                "unauthorized_icmp_redirect": 15, "rogue_gateway_redirect": 20,
+                "https_to_http_downgrade": 25, "ssl_strip_detected": 25,
+                "possible_mitm_chain": 35,
+            }
+            score = min(100, sum(weights.get(item, 10) for item in self._risk_reasons[ip]))
             self._known_hosts[ip]["risk_score"] = score
+            self._known_hosts[ip]["risk_reasons"] = sorted(self._risk_reasons[ip])
             self._db.upsert_device(ip, risk_score=score)
 
     # ------------------------------------------------------------------

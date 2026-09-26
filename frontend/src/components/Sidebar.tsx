@@ -1,8 +1,8 @@
-import { LayoutDashboard, Activity, BarChart3, Laptop, ScrollText, Settings, Radar } from 'lucide-react';
+import { LayoutDashboard, Activity, BarChart3, Laptop, ScrollText, Settings, Radar, ShieldAlert } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useDashboard } from '@/context/DashboardContext';
 
-export type PageId = 'dashboard' | 'live' | 'analytics' | 'devices' | 'logs' | 'settings';
+export type PageId = 'dashboard' | 'live' | 'analytics' | 'devices' | 'rogue' | 'ssl' | 'logs' | 'settings';
 
 interface NavItem {
   id: PageId;
@@ -15,6 +15,8 @@ const NAV: NavItem[] = [
   { id: 'live', label: 'Live Monitoring', icon: Activity },
   { id: 'analytics', label: 'Attack Analytics', icon: BarChart3 },
   { id: 'devices', label: 'Devices', icon: Laptop },
+  { id: 'rogue', label: 'Rogue Access Points', icon: Radar },
+  { id: 'ssl', label: 'SSL Strip Monitor', icon: ShieldAlert },
   { id: 'logs', label: 'Logs', icon: ScrollText },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];

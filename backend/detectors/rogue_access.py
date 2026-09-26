@@ -22,8 +22,10 @@ class RogueAccessDetector:
     its own packet capture; it receives packets via ``handle_packet()``.
     """
 
-    def __init__(self, interface: str = None, authorized_aps: List[Dict] = None):
+    def __init__(self, interface: str = None, authorized_aps: List[Dict] = None,
+                 monitor_mode: bool = False):
         self.interface = interface
+        self.monitor_mode = monitor_mode
         self.authorized_aps = {}
         if authorized_aps:
             for ap in authorized_aps:
@@ -654,6 +656,10 @@ class RogueAccessDetector:
             "thread_alive": bool(self.monitor_thread and self.monitor_thread.is_alive()),
             "detected_aps": len(self.detected_aps),
             "suspicious_aps": len(self.suspicious_aps),
+            "capability": "active" if self.monitor_mode else "limited",
+            "limitation": None if self.monitor_mode else (
+                "802.11 monitor mode is unavailable; only ARP/DHCP fallback indicators are active"
+            ),
         }
 
     def get_thread(self) -> Optional[threading.Thread]:

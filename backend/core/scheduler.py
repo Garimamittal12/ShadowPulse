@@ -10,8 +10,7 @@ Jobs:
     - ``report_generation`` : daily compliance / summary report
     - ``health_check``   : periodic health verification every 5 minutes
 
-Uses APScheduler as a background scheduler so it integrates with Flask
-without blocking the main thread.
+Uses APScheduler as a background scheduler without blocking the API server.
 
 If APScheduler is not installed, the scheduler falls back to a simple
 daemon-thread loop as a graceful degradation.

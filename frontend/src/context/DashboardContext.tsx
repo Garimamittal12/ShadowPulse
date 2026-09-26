@@ -47,7 +47,9 @@ export function useDashboard() {
   return ctx;
 }
 
-const POLL_INTERVAL = 3000;
+const FALLBACK_POLL_INTERVAL = 30000;
+const WS_URL = (import.meta.env.VITE_WS_URL as string) ||
+  `${(import.meta.env.VITE_API_BASE_URL as string || 'http://localhost:5000').replace(/^http/, 'ws')}/ws`;
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -112,8 +114,41 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     fetchAll();
-    const id = setInterval(fetchAll, POLL_INTERVAL);
-    return () => clearInterval(id);
+    const pollId = setInterval(fetchAll, FALLBACK_POLL_INTERVAL);
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(WS_URL);
+      socket.onopen = () => {
+        // Refresh once after reconnect to recover any events missed offline.
+        fetchAll();
+      };
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as { event?: string };
+          if (message.event === 'alert' || message.event === 'device_discovered') {
+            fetchAll();
+          }
+        } catch {
+          // Ignore malformed or non-JSON frames and keep the connection alive.
+        }
+      };
+      socket.onclose = () => {
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 3000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      clearInterval(pollId);
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, [fetchAll]);
 
   const startMonitoring = useCallback(async () => {

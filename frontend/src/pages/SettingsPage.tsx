@@ -9,7 +9,8 @@ import { Play, Square, Radar, Activity, ShieldCheck } from 'lucide-react';
 export function SettingsPage() {
   const { data, startMonitoring, stopMonitoring, triggerScan, actionLoading } = useDashboard();
   const status = data?.status;
-  const detectorStates = status?.detectors_enabled ?? {};
+  const detectorStates: Partial<Record<DetectorKey, boolean>> = status?.detectors_enabled ?? {};
+  const detectorStatus = status?.detector_status ?? {};
 
   return (
     <div className="space-y-5">
@@ -46,13 +47,18 @@ export function SettingsPage() {
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {(Object.keys(DETECTORS) as DetectorKey[]).map((key) => {
             const enabled = detectorStates[key] ?? false;
+            const runtime = detectorStatus[key];
             const meta = DETECTORS[key];
+            const limited = runtime?.capability === 'limited';
             return (
               <div key={key} className="card-panel p-3 flex items-center gap-3">
                 {enabled ? <ShieldCheck className="w-5 h-5 text-green-400" /> : <Activity className="w-5 h-5 text-ink-500" />}
                 <div>
                   <div className="text-sm font-semibold text-ink-200">{meta.label}</div>
-                  <div className={enabled ? 'text-[10px] text-green-400' : 'text-[10px] text-ink-500'}>{enabled ? 'ACTIVE' : 'DISABLED'}</div>
+                  <div className={enabled ? (limited ? 'text-[10px] text-amber-400' : 'text-[10px] text-green-400') : 'text-[10px] text-ink-500'}>
+                    {enabled ? (limited ? 'LIMITED' : 'ACTIVE') : 'DISABLED'}
+                  </div>
+                  {limited && <div className="mt-1 text-[10px] text-ink-500 max-w-48">{runtime?.limitation}</div>}
                 </div>
               </div>
             );

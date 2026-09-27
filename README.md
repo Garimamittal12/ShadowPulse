@@ -1,6 +1,6 @@
 # ShadowPulse - Real-Time MITM Attack Detection System
 
-ShadowPulse is a network monitoring and MITM detection project. Its FastAPI backend captures packets through one shared Scapy `PacketDispatcher`, runs the enabled detectors, stores alerts and network observations in SQLite, and serves data to a React dashboard. The dashboard receives alert and device events over WebSocket and refreshes REST snapshots every 30 seconds. Detection is heuristic: an alert is evidence to investigate, not proof of a confirmed attack.
+ShadowPulse is a real-time network monitoring and MITM detection project. Its FastAPI backend captures packets through one shared Scapy `PacketDispatcher`, runs the enabled detectors, stores alerts and network observations in SQLite, and serves data to a React dashboard. The dashboard receives alert and device events over WebSocket and refreshes REST snapshots every 30 seconds. Detection is heuristic: an alert is evidence to investigate, not proof of a confirmed attack.
 
 ---
 
@@ -19,73 +19,28 @@ ShadowPulse is a network monitoring and MITM detection project. Its FastAPI back
 - **Network topology** view of discovered devices and suspicious hosts
 - **Rogue Access Point** monitor (evil-twin / SSID impersonation detection)
 - **SSL Strip monitor** (HTTPS downgrade / HSTS-bypass detection)
-- **Detailed packet & alert logs**
+- **Alert history** in the dashboard, with a separate API for stored network logs
 - **Dark / light theme** toggle and real-time critical-alert toasts
-- **Mock / live data modes** so the dashboard can run with or without the backend
 
 ---
 
-## Architecture
+## Tech Stack
 
 | Layer | Technology | Port |
 |-------|-----------|------|
-| Backend API | Python · FastAPI · Uvicorn | `5000` |
+| Backend API | Python 3.10+ / FastAPI / Uvicorn | `5000` |
 | Database | SQLite | file `shadowpulse.db` |
-| Packet Capture | Scapy | — |
-| Frontend | React 18 · TypeScript · Vite · Tailwind CSS | `5173` by default |
-| Charts | Recharts | — |
-| Icons | lucide-react | — |
-
-```
-┌─────────────────────────────┐        ┌──────────────────────────────┐
-│        React Frontend       │ REST + WebSocket │ FastAPI Backend       │
-│  Dashboard · Live · Charts  │ ◀───────────────▶ │ /api/* + /ws           │
-│  Rogue · SSL · Logs · etc.  │                  │ Shared Scapy capture  │
-└─────────────────────────────┘        └──────────────┬───────────────┘
-                                                      │
-                                              ┌───────▼───────┐
-                                              │ SQLite DB     │
-                                              │ shadowpulse.db│
-                                              └───────────────┘
-```
-
-## Project Structure
-
-```text
-ShadowPulse/
-├── backend/
-│   ├── app.py                  # FastAPI entry point and WebSocket
-│   ├── shadowpulse.conf       # Backend configuration
-│   ├── requirements.txt
-│   ├── core/                  # Monitoring, packet dispatch, alerts, stats
-│   ├── detectors/             # Seven packet detection modules
-│   ├── routers/               # /api and /init endpoints
-│   ├── routes/                # Dashboard, alert, device, log, network, report APIs
-│   ├── models/                # Alert, device, log, and network dataclasses
-│   ├── tests/                 # Backend regression tests
-│   └── utils/                 # Config, database, logging, paths, scanner, parser
-│       └── log_parser.py      # Parser utility; exported by utils/__init__.py
-├── frontend/
-│   ├── public/
-│   └── src/
-│       ├── components/
-│       ├── context/
-│       ├── lib/               # API client, types, mock data, formatting
-│       └── pages/
-├── README.md
-└── .gitignore
-```
-
-The model dataclasses are present but are not currently used by backend routes or persistence, which work with SQLite rows and dictionaries. `utils/log_parser.py` provides packet/log parsing classes and is re-exported from `utils/__init__.py`; the active packet detection pipeline uses the detector modules and shared dispatcher instead. Keep these modules if you plan to use those interfaces; they are not required by the current monitoring flow.
+| Packet Capture | Scapy | - |
+| Frontend | React 18 / TypeScript / Vite / Tailwind CSS | `5173` by default |
+| Charts | Recharts | - |
+| Icons | lucide-react | - |
 
 ---
-
 ## Prerequisites
 
-- **Python 3.9+**
+- **Python 3.10+**
 - **Node.js 18+** and **npm**
 - A network interface to capture traffic (for live detection). On **Linux/macOS** packet capture typically requires root/admin privileges or `libpcap`; on **Windows**, use Npcap with the `scapy` backend.
-- The dashboard can run **without** a capture interface using **mock data mode** (see [Frontend Configuration](#frontend-configuration)).
 
 ---
 
@@ -106,19 +61,9 @@ pip install -r requirements.txt
 python app.py
 ```
 
-5. Confirm the backend is running and the packet capture interface is selected:
+5. Confirm the backend is running and the packet capture interface is selected.
 
-```powershell
-curl.exe -sS http://127.0.0.1:5000/api/status
-```
-
-6. Trigger a live scan:
-
-```powershell
-curl.exe -sS -X POST http://127.0.0.1:5000/api/scan
-```
-
-7. If packet capture fails, verify Npcap is installed correctly and the selected adapter is active.
+6. If packet capture fails, verify Npcap is installed correctly and the selected adapter is active.
 
 ---
 
@@ -134,20 +79,9 @@ python app.py
 
 The backend runs at **http://localhost:5000**.
 
-> **Tip:** Create a virtual environment first to keep dependencies isolated:
->
-> ```bash
-> python -m venv venv
-> # Windows:
-> venv\Scripts\activate
-> # macOS / Linux:
-> source venv/bin/activate
-> pip install -r requirements.txt
-> ```
-
 #### Initialize the database
 
-The first time you run the backend (or to reset it), initialize the schema and default data:
+The database schema is created automatically when the backend starts. To add default configuration records and create runtime directories, call:
 
 ```bash
 curl -X POST http://localhost:5000/init/setup
@@ -175,48 +109,30 @@ Open **http://localhost:5173** in your browser. The dashboard receives alert/dev
 
 ### Backend - `shadowpulse.conf`
 
-Configuration lives in `backend/shadowpulse.conf` (INI format). A default file is auto-generated if it does not exist. Key sections:
+Configuration lives in `backend/shadowpulse.conf`. A default file is auto-generated if it does not exist. Key sections:
 
 | Section | Description |
 |---------|-------------|
 | `[SYSTEM]` | Debug mode, log level, data retention, max log size, backups |
 | `[NETWORK]` | Interface to monitor, scan interval, network range, timeouts |
 | `[DETECTORS]` | Enable/disable each of the 7 detectors |
-| `[ALERTS]` | Severity threshold, email/SMS/webhook notifications, cooldown |
+| `[ALERTS]` | Severity threshold, cooldown, and notification settings |
 | `[DATABASE]` | SQLite path, pool size, timeout |
+| `[BASELINES]` | Trusted DHCP/DNS servers and authorized access points |
 | `[API]` | Host, port, secret key, CORS, rate limit |
 
-### Environment Variable Overrides
-
-Backend settings can be overridden with environment variables:
-
-| Variable | Maps to |
-|----------|---------|
-| `SHADOWPULSE_DEBUG` | `[SYSTEM] debug` |
-| `SHADOWPULSE_INTERFACE` | `[NETWORK] interface` |
-| `SHADOWPULSE_DB_PATH` | `[DATABASE] path` |
-| `SHADOWPULSE_API_PORT` | `[API] port` |
-| `SHADOWPULSE_SECRET_KEY` | `[API] secret_key` |
+The alert pipeline currently persists alerts and emits them to connected WebSocket clients.
 
 ### Frontend Configuration
 
-The frontend reads two environment variables (optionally set in `frontend/.env`):
+The frontend reads these optional environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `VITE_API_BASE_URL` | `http://localhost:5000` | Backend API base URL |
 | `VITE_WS_URL` | Derived from `VITE_API_BASE_URL` as `ws://.../ws` | Backend WebSocket URL |
-| `VITE_USE_MOCK` | `false` | Set to `true` to use generated mock data instead of backend requests |
 
-> **Example:** To force the frontend to use the live backend:
->
-> ```bash
-> VITE_USE_MOCK=false VITE_API_BASE_URL=http://localhost:5000 npm start
-> ```
-
-### Runtime data locations
-
-The canonical database is `backend/shadowpulse.db`, and application logs are written under `backend/logs/`, regardless of the launch directory. Initialization creates the expected runtime directories under `backend/`. Report and log export endpoints currently write to an `exports/` directory relative to the backend process's working directory; the documented startup commands run the process from `backend/`. Existing root-level database files are separate and are not automatically migrated.
+When the API base URL uses HTTPS, the derived WebSocket URL uses secure WebSockets (`wss://`). Set `VITE_WS_URL` explicitly when the WebSocket endpoint is hosted separately.
 
 ---
 
@@ -234,40 +150,12 @@ The canonical database is `backend/shadowpulse.db`, and application logs are wri
 
 Each detector module can be individually enabled or disabled via the `[DETECTORS]` section of `shadowpulse.conf`.
 
----
+### Network visibility limits
 
-## API Reference
-
-The backend exposes the dashboard snapshot and monitoring-control API under `/api/*`, plus feature endpoints under `/dashboard`, `/alerts`, `/devices`, `/logs`, `/network`, and `/reports`.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/status` | Monitoring status and enabled detectors |
-| `GET` | `/api/alerts` | Latest alerts (`?limit=N`) |
-| `GET` | `/api/network` | Network info, gateway, connected devices |
-| `GET` | `/api/statistics` | Aggregated stats for dashboard/analytics |
-| `GET` | `/api/logs` | Recent log entries (`?limit=N`) |
-| `GET` | `/api/rogue` | Rogue access point data |
-| `GET` | `/api/ssl` | SSL strip session & warning data |
-| `POST` | `/api/start` | Start monitoring |
-| `POST` | `/api/stop` | Stop monitoring |
-| `POST` | `/api/scan` | Trigger a network scan |
-| `GET` | `/dashboard/stats` | System and security summary metrics |
-| `GET` | `/alerts/` | Stored alerts; `/alerts/stats` returns alert summaries |
-| `GET` | `/devices/` | Discovered devices |
-| `GET` | `/logs/` | Stored network log entries |
-| `GET` | `/network/topology` | Network topology data |
-| `GET` | `/reports/security-summary` | Security summary report |
-| `GET` | `/reports/threat-analysis` | Threat analysis report |
-| `GET` | `/reports/compliance` | Compliance summary |
-| `POST` | `/reports/export` | Export a report |
-| `POST` | `/init/setup` | Initialize DB schema & default data |
-| `GET` | `/init/status` | System initialization status |
-| `GET` | `/init/health` | Backend health check |
-
-The React client loads snapshots through FastAPI REST endpoints and receives alert/device events over `/ws`. A periodic REST refresh recovers state after reconnects and catches updates missed while disconnected. With `VITE_USE_MOCK=false`, backend request failures are surfaced to the dashboard; mock data is used only when mock mode is explicitly enabled.
+ShadowPulse can analyze only packets visible at its capture interface. On a typical switched Ethernet or Wi-Fi network, a computer does not see all unicast traffic exchanged by other devices. The rogue access point detector also depends on compatible 802.11 capture; monitor mode is disabled by default. HTTPS encryption limits inspection of page contents, so SSL-strip and HTTP-content checks rely on observable metadata and unencrypted traffic. Detection is limited by capture visibility and the evidence available in packets.
 
 ---
+
 
 ## Frontend Pages
 
@@ -277,10 +165,10 @@ The React client loads snapshots through FastAPI REST endpoints and receives ale
 | **Live Monitoring** | Real-time feed of active events and packet rate |
 | **Attack Analytics** | Charts, severity breakdown, heatmap, week-over-week trends |
 | **Devices** | Discovered devices, vendors, trust/rogue status |
-| **Rogue Access** | Authorized vs. nearby access points, evil-twin detection |
-| **SSL Strip Monitor** | HTTPS session status, downgrade warnings |
-| **Logs** | Detailed packet and alert logs |
-| **Settings** | Monitoring controls, theme toggle, configuration |
+| **Rogue Access** | Authorized vs. nearby access points, evil-twin detection (requires compatible Wi-Fi capture for 802.11 visibility) |
+| **SSL Strip Monitor** | HTTPS session status and downgrade warnings based on observable traffic |
+| **Logs** | Search and filter alert history; network logs are available through the backend API |
+| **Settings** | Monitoring controls and capture status; theme control is in the top bar |
 
 ---
 
@@ -288,13 +176,10 @@ The React client loads snapshots through FastAPI REST endpoints and receives ale
 
 | Issue | Fix |
 |-------|-----|
-| **CORS errors in the dashboard** | Ensure the backend is running and CORS is enabled (`[API] cors_enabled = True`). Restart the backend after changes. |
-| **Database errors** | Run the init endpoint: `curl -X POST http://localhost:5000/init/setup` |
-| **No live data on the dashboard** | Confirm `VITE_USE_MOCK=false`, start the backend from `backend/`, and check capture privileges/Npcap and the configured interface. |
+| **CORS errors in the dashboard** | Ensure the frontend origin is allowed by the CORS middleware, then restart the backend. |
+| **Database errors** | The schema is created when the backend starts. If default records or runtime directories are missing, call `POST /init/setup`. |
 | **Dashboard shows offline** | Confirm backend is on `localhost:5000`, or set `VITE_API_BASE_URL` to the correct backend URL. |
 | **Packet capture errors** | Verify the interface in `[NETWORK] interface` exists and that you have the required privileges / Npcap installed. |
-| **Want to view the dashboard without the backend** | Set `VITE_USE_MOCK=true` in `frontend/.env` to use generated mock data. |
-
 ---
 
 ## License

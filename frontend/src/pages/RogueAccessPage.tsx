@@ -1,10 +1,9 @@
 import { useDashboard } from '@/context/DashboardContext';
 import { PageHeader, SectionCard } from '@/components/StatCard';
 import { SkeletonList, EmptyState } from '@/components/Loaders';
-import { SignalBars, AreaSparkline } from '@/components/Charts';
+import { SignalBars } from '@/components/Charts';
 import type { NearbyAP } from '@/lib/types';
 import { Wifi, ShieldCheck, AlertTriangle, EyeOff, Lock, Unlock, Radio } from 'lucide-react';
-import { useMemo } from 'react';
 
 function FlagBadge({ flag }: { flag: string }) {
   const colors: Record<string, string> = {
@@ -19,14 +18,6 @@ function FlagBadge({ flag }: { flag: string }) {
       {flag}
     </span>
   );
-}
-
-function RssiSparkline({ baseRssi }: { baseRssi: number }) {
-  const data = useMemo(
-    () => Array.from({ length: 15 }, (_, i) => Math.max(-95, Math.min(-20, baseRssi + Math.round((Math.random() - 0.5) * 12)))),
-    [baseRssi]
-  );
-  return <AreaSparkline data={data} color="#F97316" height={32} width={80} id={`rssi-${baseRssi}`} />;
 }
 
 export function RogueAccessPage() {
@@ -130,12 +121,6 @@ export function RogueAccessPage() {
                     </div>
                     <div className="text-xs text-ink-400">Ch <span className="font-mono text-ink-200">{ap.channel}</span></div>
                     <SignalBars rssi={ap.rssi} />
-                    {isFlagged && (
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-ink-500">RSSI trend</span>
-                        <RssiSparkline baseRssi={ap.rssi} />
-                      </div>
-                    )}
                     <div className="flex items-center gap-1 flex-wrap">
                       {ap.flags.map((f) => <FlagBadge key={f} flag={f} />)}
                     </div>

@@ -2,10 +2,9 @@ import { useDashboard } from '@/context/DashboardContext';
 import { PageHeader, SectionCard } from '@/components/StatCard';
 import { SkeletonList, EmptyState } from '@/components/Loaders';
 import { SeverityBadge } from '@/components/SeverityBadge';
-import { GaugeChart, AreaSparkline } from '@/components/Charts';
+import { GaugeChart } from '@/components/Charts';
 import type { SSLSession } from '@/lib/types';
 import { Lock, Unlock, ShieldCheck, ShieldAlert, ArrowRightCircle, Info } from 'lucide-react';
-import { useMemo } from 'react';
 
 const STATUS_META: Record<SSLSession['status'], { label: string; color: string; icon: typeof Lock }> = {
   secure: { label: 'Secure', color: '#22C55E', icon: ShieldCheck },
@@ -49,14 +48,6 @@ export function SSLStripPage() {
   const securityScore = calcSecurityScore(sessions);
   const sl = scoreLabel(securityScore);
 
-  const downgradeHistory = useMemo(
-    () => Array.from({ length: 15 }, (_, i) => {
-      const base = atRiskCount;
-      return Math.max(0, Math.round(base + Math.sin(i / 2) * 2 + (Math.random() - 0.5) * 2));
-    }),
-    [atRiskCount]
-  );
-
   return (
     <div className="space-y-5">
       <PageHeader title="SSL Strip Monitor" subtitle="Detects HTTPS downgrades, SSL stripping, and missing HSTS — data from /api/ssl" />
@@ -79,9 +70,6 @@ export function SSLStripPage() {
           <div className="card p-4">
             <div className="flex items-center gap-2 text-xs text-ink-400 mb-2"><Lock className="w-4 h-4 text-amber-400" /> Active Warnings</div>
             <div className="text-2xl font-bold text-amber-400">{warnings.length}</div>
-            <div className="mt-2">
-              <AreaSparkline data={downgradeHistory} color="#F59E0B" height={32} width={120} id="downgrades" />
-            </div>
           </div>
         </div>
       </div>
